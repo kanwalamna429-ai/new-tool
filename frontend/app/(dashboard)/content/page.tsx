@@ -28,11 +28,15 @@ import {
   Tag,
   User,
   Calendar,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  Hash,
+  AlertCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
-// Supabase helper — avoids SSR throw if env vars are missing
+// Supabase helper
 // ---------------------------------------------------------------------------
 
 function getSupabase(): SupabaseClient | null {
@@ -79,10 +83,21 @@ interface GeneratedPost {
   platform:           string
   content:            string
   hashtags:           string[]
+  charLimit:          number
   generatedContentId: string
   scheduledPostId:    string
   connectionId:       string | null
   error?:             string
+}
+
+interface GenerateResponse {
+  success:              boolean
+  rewrittenTitle:       string | null
+  rewrittenDescription: string | null
+  ogImage:              string | null
+  sourceUrl:            string | null
+  posts:                GeneratedPost[]
+  error?:               string
 }
 
 type ExtractState  = "idle" | "extracting" | "done" | "error"
@@ -104,7 +119,192 @@ const PLATFORMS_WITH_ADAPTERS = new Set([
 ])
 
 // ---------------------------------------------------------------------------
-// URL Card — handles extract → generate → publish for a single URL
+// Post Preview Card — renders the full composed post (image + title + desc + body + url + tags)
+// ---------------------------------------------------------------------------
+
+interface PostPreviewProps {
+  platform:           string
+  content:            string
+  editedContent:      string
+  onEditContent:      (val: string) => void
+  hashtags:           string[]
+  charLimit:          number
+  rewrittenTitle:     string | null
+  rewrittenDesc:      string | null
+  ogImage:            string | null
+  sourceUrl:          string | null
+  connectionId:       string | null
+  publishState:       PublishState
+  publishError:       string
+  publishSuccess:     boolean
+  onPublish:          () => void
+  error?:             string
+}
+
+function PostPreview({
+  platform, content, editedContent, onEditContent, hashtags, charLimit,
+  rewrittenTitle, rewrittenDesc, ogImage, sourceUrl, connectionId,
+  publishState, publishError, publishSuccess, onPublish, error,
+}: PostPreviewProps) {
+  const cfg        = PLATFORM_REGISTRY[platform as keyof typeof PLATFORM_REGISTRY]
+  const hasConn    = !!connectionId
+  const hasAdapter = PLATFORMS_WITH_ADAPTERS.has(platform)
+  const canPublish = hasConn && hasAdapter
+  const charCount  = editedContent.length
+  const overLimit  = charLimit > 0 && charCount > charLimit
+
+  return (
+    <div className="rounded-lg border bg-card overflow-hidden">
+      {/* Platform header */}
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b bg-muted/30">
+        <span className="text-sm font-semibold">{cfg?.name ?? platform}</span>
+        <div className="flex items-center gap-2">
+          {charLimit > 0 && (
+            <span className={cn("text-xs tabular-nums", overLimit ? "text-destructive font-medium" : "text-muted-foreground")}>
+              {charCount}/{charLimit}
+            </span>
+          )}
+          {publishSuccess ? (
+            <Badge className="text-xs gap-1 bg-green-500/10 text-green-600 border-green-200 hover:bg-green-500/10">
+              <CheckCircle2 className="h-3 w-3" /> Published
+            </Badge>
+          ) : publishState === "error" ? (
+            <Badge variant="destructive" className="text-xs">Failed</Badge>
+          ) : !hasAdapter ? (
+            <Badge variant="outline" className="text-xs text-muted-foreground">No adapter yet</Badge>
+          ) : !hasConn ? (
+            <Badge variant="outline" className="text-xs text-amber-600 border-amber-200 bg-amber-50">No connection</Badge>
+          ) : (
+            <Badge variant="outline" className="text-xs text-green-600 border-green-200 bg-green-50">Ready</Badge>
+          )}
+        </div>
+      </div>
+
+      {/* Post composition preview */}
+      <div className="p-4 space-y-3">
+        {/* Featured image */}
+        {ogImage && (
+          <div className="rounded-lg overflow-hidden border bg-muted/30 aspect-video relative">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={ogImage}
+              alt="Featured"
+              className="w-full h-full object-cover"
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none" }}
+            />
+            <div className="absolute bottom-2 left-2">
+              <Badge variant="secondary" className="text-[10px] gap-1 opacity-80">
+                <ImageIcon className="h-2.5 w-2.5" /> Featured image
+              </Badge>
+            </div>
+          </div>
+        )}
+
+        {/* Rewritten title */}
+        {rewrittenTitle && (
+          <div className="space-y-0.5">
+            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+              <FileText className="h-3 w-3" /> AI Title
+            </p>
+            <p className="text-sm font-semibold leading-snug">{rewrittenTitle}</p>
+          </div>
+        )}
+
+        {/* Rewritten description */}
+        {rewrittenDesc && (
+          <div className="space-y-0.5">
+            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+              <FileText className="h-3 w-3" /> AI Description
+            </p>
+            <p className="text-xs text-muted-foreground leading-relaxed">{rewrittenDesc}</p>
+          </div>
+        )}
+
+        <div className="border-t pt-3 space-y-2">
+          {/* Post body — editable */}
+          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Post body</p>
+          {error ? (
+            <p className="text-xs text-destructive flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {error}
+            </p>
+          ) : (
+            <Textarea
+              value={editedContent}
+              onChange={(e) => onEditContent(e.target.value)}
+              className={cn("text-sm min-h-[90px] resize-none", overLimit && "border-destructive focus-visible:ring-destructive")}
+              disabled={publishState === "publishing" || publishSuccess}
+              placeholder="Post content will appear here…"
+            />
+          )}
+
+          {/* Hashtags */}
+          {hashtags.length > 0 && (
+            <div className="flex items-start gap-1.5">
+              <Hash className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+              <div className="flex flex-wrap gap-1">
+                {hashtags.map((h) => (
+                  <span key={h} className="text-xs text-primary font-medium">{h.startsWith("#") ? h : `#${h}`}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Source URL */}
+          {sourceUrl && (
+            <div className="flex items-center gap-1.5">
+              <LinkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <a
+                href={sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary hover:underline truncate"
+              >
+                {sourceUrl}
+              </a>
+            </div>
+          )}
+        </div>
+
+        {/* Error / publish feedback */}
+        {publishError && (
+          <p className="text-xs text-destructive flex items-start gap-1.5">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {publishError}
+          </p>
+        )}
+
+        {/* Publish button */}
+        {!publishSuccess && !error && (
+          <Button
+            size="sm"
+            className="h-8 text-xs gap-1.5 w-full"
+            onClick={onPublish}
+            disabled={publishState === "publishing" || !canPublish || overLimit}
+            title={
+              !hasAdapter ? "No adapter for this platform yet"
+              : !hasConn  ? "Connect this platform in Connections first"
+              : overLimit ? "Content exceeds character limit"
+              : undefined
+            }
+          >
+            {publishState === "publishing"
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <Send className="h-3 w-3" />}
+            {publishState === "publishing"
+              ? "Publishing…"
+              : canPublish
+              ? "Publish Now"
+              : hasAdapter
+              ? "Connect Platform First"
+              : "Adapter Pending"}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// URL Card
 // ---------------------------------------------------------------------------
 
 interface UrlCardProps {
@@ -114,31 +314,35 @@ interface UrlCardProps {
 }
 
 function UrlCard({ url, campaign, connections }: UrlCardProps) {
-  const [extractState,   setExtractState]   = useState<ExtractState>("idle")
-  const [extractError,   setExtractError]   = useState<string | null>(null)
-  const [extracted,      setExtracted]      = useState<ExtractedContent | null>(null)
-  const [showExtracted,  setShowExtracted]  = useState(false)
+  const [extractState,  setExtractState]  = useState<ExtractState>("idle")
+  const [extractError,  setExtractError]  = useState<string | null>(null)
+  const [extracted,     setExtracted]     = useState<ExtractedContent | null>(null)
+  const [showExtracted, setShowExtracted] = useState(false)
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([])
   const [generateState,     setGenerateState]     = useState<GenerateState>("idle")
   const [generateError,     setGenerateError]     = useState<string | null>(null)
-  const [generatedPosts,    setGeneratedPosts]    = useState<GeneratedPost[]>([])
-  const [editedContent,     setEditedContent]     = useState<Record<string, string>>({})
 
+  // Generation result shared across all posts for this URL
+  const [generatedPosts,        setGeneratedPosts]        = useState<GeneratedPost[]>([])
+  const [rewrittenTitle,        setRewrittenTitle]        = useState<string | null>(null)
+  const [rewrittenDesc,         setRewrittenDesc]         = useState<string | null>(null)
+  const [generatedOgImage,      setGeneratedOgImage]      = useState<string | null>(null)
+  const [generatedSourceUrl,    setGeneratedSourceUrl]    = useState<string | null>(null)
+
+  const [editedContent,  setEditedContent]  = useState<Record<string, string>>({})
   const [publishStates,  setPublishStates]  = useState<Record<string, PublishState>>({})
   const [publishErrors,  setPublishErrors]  = useState<Record<string, string>>({})
   const [publishSuccess, setPublishSuccess] = useState<Record<string, boolean>>({})
 
-  // Pre-select campaign platforms that have a connected account
+  // Pre-select connected platforms
   useEffect(() => {
-    const connectedSet = new Set(
-      connections.filter((c) => c.status === "connected").map((c) => c.platform)
-    )
-    const initial = campaign.platforms.filter((p) => connectedSet.has(p))
+    const connected = new Set(connections.filter((c) => c.status === "connected").map((c) => c.platform))
+    const initial   = campaign.platforms.filter((p) => connected.has(p))
     setSelectedPlatforms(initial.length > 0 ? initial : campaign.platforms.slice(0, 1))
   }, [campaign.platforms, connections])
 
-  // Load existing extracted_content on mount
+  // Load existing extracted_content
   useEffect(() => {
     const supabase = getSupabase()
     if (!supabase) return
@@ -157,7 +361,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
     setExtractState("extracting")
     setExtractError(null)
     try {
-      const res = await fetch("/api/extract", {
+      const res  = await fetch("/api/extract", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ urlId: url.id }),
@@ -201,7 +405,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
     }
 
     try {
-      const res = await fetch("/api/generate", {
+      const res  = await fetch("/api/generate", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({
@@ -209,15 +413,19 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
           campaignId:   campaign.id,
           platforms:    selectedPlatforms,
           connectionIds,
-          editedContent,
         }),
       })
-      const data = await res.json()
+      const data: GenerateResponse = await res.json()
       if (!res.ok || !data.success) throw new Error(data.error ?? "Generation failed")
-      const posts = data.posts as GeneratedPost[]
-      setGeneratedPosts(posts)
+
+      setGeneratedPosts(data.posts)
+      setRewrittenTitle(data.rewrittenTitle)
+      setRewrittenDesc(data.rewrittenDescription)
+      setGeneratedOgImage(data.ogImage)
+      setGeneratedSourceUrl(data.sourceUrl)
+
       const initContent: Record<string, string> = {}
-      for (const post of posts) initContent[post.platform] = post.content
+      for (const post of data.posts) initContent[post.platform] = post.content
       setEditedContent(initContent)
       setGenerateState("done")
     } catch (err) {
@@ -240,7 +448,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
       let scheduledPostId = post.scheduledPostId
       const edited = editedContent[platform]
 
-      // If content was edited, create a new scheduled_post with the edited content
+      // If content was edited, create a fresh scheduled_post with the edited content
       if (edited && edited !== post.content) {
         const cid = getConnectionId(platform)
         const regenRes = await fetch("/api/generate", {
@@ -254,13 +462,13 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
             editedContent: { [platform]: edited },
           }),
         })
-        const regenData = await regenRes.json()
+        const regenData: GenerateResponse = await regenRes.json()
         if (regenData.success && regenData.posts?.[0]?.scheduledPostId) {
           scheduledPostId = regenData.posts[0].scheduledPostId
         }
       }
 
-      const res = await fetch("/api/publish-now", {
+      const res  = await fetch("/api/publish-now", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ scheduledPostIds: [scheduledPostId] }),
@@ -269,8 +477,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
       const result = data.results?.[0]
 
       if (!res.ok || !result?.success) {
-        const errMsg = result?.error ?? data.error ?? "Publish failed"
-        setPublishErrors((e) => ({ ...e, [platform]: errMsg }))
+        setPublishErrors((e) => ({ ...e, [platform]: result?.error ?? data.error ?? "Publish failed" }))
         setPublishStates((s) => ({ ...s, [platform]: "error" }))
       } else {
         setPublishStates((s)  => ({ ...s, [platform]: "done" }))
@@ -283,9 +490,6 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Render
-  // -------------------------------------------------------------------------
   const availablePlatforms = campaign.platforms.filter(
     (p) => PLATFORM_REGISTRY[p as keyof typeof PLATFORM_REGISTRY]
   )
@@ -298,6 +502,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
 
   return (
     <Card className="overflow-hidden">
+      {/* URL header */}
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -316,8 +521,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
           <div className="flex items-center gap-2 shrink-0">
             {extracted && (
               <Badge variant="secondary" className="text-xs gap-1">
-                <CheckCircle2 className="h-3 w-3 text-green-500" />
-                Extracted
+                <CheckCircle2 className="h-3 w-3 text-green-500" /> Extracted
               </Badge>
             )}
             <Button
@@ -334,13 +538,12 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
             </Button>
           </div>
         </div>
-
         {extractState === "error" && extractError && (
           <p className="text-xs text-destructive mt-1">{extractError}</p>
         )}
       </CardHeader>
 
-      {/* Extracted content preview */}
+      {/* Extracted content summary */}
       {extracted && (
         <div className="px-6 pb-3">
           <button
@@ -353,14 +556,25 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
 
           {showExtracted && (
             <div className="mt-3 rounded-lg border bg-muted/40 p-4 space-y-2 text-sm">
+              {extracted.og_image_url && (
+                <div className="rounded overflow-hidden border aspect-video bg-muted/30 mb-2 max-h-32">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={extracted.og_image_url}
+                    alt="OG image"
+                    className="w-full h-full object-cover"
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).parentElement!.style.display = "none" }}
+                  />
+                </div>
+              )}
               {extracted.title && (
                 <div className="flex gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                  <p className="font-medium">{extracted.title}</p>
+                  <p className="font-medium text-sm">{extracted.title}</p>
                 </div>
               )}
               {extracted.description && (
-                <p className="text-muted-foreground text-xs leading-relaxed line-clamp-3 pl-6">
+                <p className="text-muted-foreground text-xs leading-relaxed line-clamp-2 pl-6">
                   {extracted.description}
                 </p>
               )}
@@ -378,8 +592,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
                 )}
                 {extracted.source_url && (
                   <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Globe className="h-3 w-3" />
-                    {formatHost(extracted.source_url)}
+                    <Globe className="h-3 w-3" /> {formatHost(extracted.source_url)}
                   </span>
                 )}
               </div>
@@ -413,18 +626,21 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
                     key={p}
                     onClick={() => togglePlatform(p)}
                     className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border transition-colors",
+                      "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium border transition-colors",
                       selected
                         ? "bg-primary text-primary-foreground border-primary"
                         : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
                     )}
                   >
                     {cfg?.name ?? p}
-                    {!hasConn && <span className="opacity-50 ml-0.5">·</span>}
+                    {!hasConn && <span className="opacity-40 text-[9px]">●</span>}
                   </button>
                 )
               })}
             </div>
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              Tone, style &amp; hashtags are loaded from your platform settings.
+            </p>
           </div>
 
           <Button
@@ -438,97 +654,51 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
               : <Sparkles className="h-3.5 w-3.5" />}
             {generateState === "generating"
               ? `Generating for ${selectedPlatforms.length} platform${selectedPlatforms.length > 1 ? "s" : ""}…`
+              : generatedPosts.length > 0
+              ? "Re-generate All"
               : "Generate Posts"}
           </Button>
 
           {generateError && (
-            <p className="text-xs text-destructive">{generateError}</p>
+            <p className="text-xs text-destructive flex items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5" /> {generateError}
+            </p>
           )}
 
-          {/* Generated posts */}
+          {/* Generated post cards */}
           {generatedPosts.length > 0 && (
             <div className="space-y-3">
-              <p className="text-xs font-medium text-muted-foreground">
-                Generated posts — review &amp; publish
-              </p>
-              {generatedPosts.map((post) => {
-                const cfg       = PLATFORM_REGISTRY[post.platform as keyof typeof PLATFORM_REGISTRY]
-                const pState    = publishStates[post.platform]  ?? "idle"
-                const pError    = publishErrors[post.platform]  ?? ""
-                const pSuccess  = publishSuccess[post.platform] ?? false
-                const hasConn   = !!post.connectionId
-                const hasAdapter = PLATFORMS_WITH_ADAPTERS.has(post.platform)
-                const canPublish = hasConn && hasAdapter
-
-                return (
-                  <div key={post.platform} className="rounded-lg border p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold">{cfg?.name ?? post.platform}</span>
-                      {pSuccess ? (
-                        <Badge className="text-xs gap-1 bg-green-500/10 text-green-600 border-green-200 hover:bg-green-500/10">
-                          <CheckCircle2 className="h-3 w-3" /> Published
-                        </Badge>
-                      ) : pState === "error" ? (
-                        <Badge variant="destructive" className="text-xs">Failed</Badge>
-                      ) : !hasAdapter ? (
-                        <Badge variant="outline" className="text-xs text-muted-foreground">No adapter yet</Badge>
-                      ) : !hasConn ? (
-                        <Badge variant="outline" className="text-xs text-muted-foreground">No connection</Badge>
-                      ) : null}
-                    </div>
-
-                    {post.error ? (
-                      <p className="text-xs text-destructive">{post.error}</p>
-                    ) : (
-                      <Textarea
-                        value={editedContent[post.platform] ?? post.content}
-                        onChange={(e) =>
-                          setEditedContent((prev) => ({ ...prev, [post.platform]: e.target.value }))
-                        }
-                        className="text-xs min-h-[80px] resize-none"
-                        disabled={pState === "publishing" || pSuccess}
-                      />
-                    )}
-
-                    {post.hashtags.length > 0 && !post.error && (
-                      <div className="flex flex-wrap gap-1">
-                        {post.hashtags.map((h) => (
-                          <span key={h} className="text-xs text-primary">#{h}</span>
-                        ))}
-                      </div>
-                    )}
-
-                    {pError && (
-                      <p className="text-xs text-destructive">{pError}</p>
-                    )}
-
-                    {!pSuccess && !post.error && (
-                      <Button
-                        size="sm"
-                        className="h-7 text-xs gap-1.5 w-full"
-                        onClick={() => handlePublish(post)}
-                        disabled={pState === "publishing" || !canPublish}
-                        title={
-                          !hasAdapter ? "No adapter for this platform yet"
-                          : !hasConn ? "Connect this platform in Connections first"
-                          : undefined
-                        }
-                      >
-                        {pState === "publishing"
-                          ? <Loader2 className="h-3 w-3 animate-spin" />
-                          : <Send className="h-3 w-3" />}
-                        {pState === "publishing"
-                          ? "Publishing…"
-                          : canPublish
-                          ? "Publish Now"
-                          : hasAdapter
-                          ? "Connect Platform"
-                          : "Adapter Pending"}
-                      </Button>
-                    )}
-                  </div>
-                )
-              })}
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Generated posts — review &amp; publish
+                </p>
+                {(rewrittenTitle || rewrittenDesc) && (
+                  <Badge variant="secondary" className="text-[10px] gap-1">
+                    <Sparkles className="h-2.5 w-2.5" /> AI-enhanced
+                  </Badge>
+                )}
+              </div>
+              {generatedPosts.map((post) => (
+                <PostPreview
+                  key={post.platform}
+                  platform={post.platform}
+                  content={post.content}
+                  editedContent={editedContent[post.platform] ?? post.content}
+                  onEditContent={(val) => setEditedContent((prev) => ({ ...prev, [post.platform]: val }))}
+                  hashtags={post.hashtags}
+                  charLimit={post.charLimit}
+                  rewrittenTitle={rewrittenTitle}
+                  rewrittenDesc={rewrittenDesc}
+                  ogImage={generatedOgImage}
+                  sourceUrl={generatedSourceUrl}
+                  connectionId={post.connectionId}
+                  publishState={publishStates[post.platform] ?? "idle"}
+                  publishError={publishErrors[post.platform] ?? ""}
+                  publishSuccess={publishSuccess[post.platform] ?? false}
+                  onPublish={() => handlePublish(post)}
+                  error={post.error}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -551,7 +721,6 @@ export default function ContentPage() {
 
   const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId) ?? null
 
-  // Load campaigns + connections on mount
   useEffect(() => {
     async function load() {
       const supabase = getSupabase()
@@ -577,7 +746,6 @@ export default function ContentPage() {
     load()
   }, [])
 
-  // Load URLs when campaign changes
   const loadUrlsForCampaign = useCallback(async (campaignId: string) => {
     const supabase = getSupabase()
     if (!supabase) return
@@ -606,11 +774,10 @@ export default function ContentPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Content</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Extract, generate, and publish posts for your campaign URLs.
+          Extract URL content, AI-generate platform posts, and publish — all in one place.
         </p>
       </div>
 
@@ -629,8 +796,7 @@ export default function ContentPage() {
         </Card>
       ) : (
         <>
-          {/* Campaign selector */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <label className="text-sm font-medium text-muted-foreground shrink-0">Campaign</label>
             <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
               <SelectTrigger className="w-72">
@@ -652,9 +818,13 @@ export default function ContentPage() {
                 ))}
               </SelectContent>
             </Select>
+            <Button variant="ghost" size="sm" className="text-xs gap-1.5 h-7 text-muted-foreground" asChild>
+              <a href="/settings?tab=platforms">
+                <Sparkles className="h-3 w-3" /> AI settings
+              </a>
+            </Button>
           </div>
 
-          {/* Campaign platform badges */}
           {selectedCampaign && selectedCampaign.platforms.length > 0 && (
             <div className="flex flex-wrap gap-1.5 items-center">
               <span className="text-xs text-muted-foreground">Targets:</span>
@@ -671,7 +841,6 @@ export default function ContentPage() {
             </div>
           )}
 
-          {/* URL list */}
           {urlsLoading ? (
             <div className="flex items-center justify-center h-32">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -690,7 +859,7 @@ export default function ContentPage() {
               </CardContent>
             </Card>
           ) : (
-            <div className="grid gap-4 md:grid-cols-1 lg:grid-cols-2">
+            <div className="grid gap-4 lg:grid-cols-2">
               {selectedCampaign && campaignUrls.map((u) => (
                 <UrlCard
                   key={u.id}

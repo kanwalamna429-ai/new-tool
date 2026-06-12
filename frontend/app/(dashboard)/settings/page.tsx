@@ -1,6 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { createClient } from "@/lib/supabase/client"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { Header } from "@/components/layout/header"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,6 +12,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
+import { Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import {
   PLATFORM_LABELS,
   PLATFORM_ABBREV,
@@ -18,46 +21,138 @@ import {
   PLATFORM_REGISTRY,
   type AllPlatformId,
 } from "@/lib/platforms"
+import {
+  loadSettings,
+  saveSettings,
+  DEFAULT_PROFILE,
+  DEFAULT_PLATFORM_SETTING,
+  type WorkspaceProfile,
+  type PlatformDefaults,
+  type PlatformDefaultSettings,
+} from "@/lib/services/settings"
 
-const TONE_OPTIONS = ["professional", "casual", "conversational", "educational", "inspirational", "humorous"]
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getSupabase(): SupabaseClient | null {
+  try { return createClient() } catch { return null }
+}
+
+const TONE_OPTIONS  = ["professional", "casual", "conversational", "educational", "inspirational", "humorous"]
 const STYLE_OPTIONS = ["concise", "detailed", "listicle", "storytelling"]
 
-interface PlatformDefaults {
-  tone: string
-  hashtags: string
-  cta: string
-  style: string
-  includeEmoji: boolean
-  autoApprove: boolean
-}
+type SaveStatus = "idle" | "saving" | "saved" | "error"
 
-const DEFAULT_PLATFORM_SETTINGS: PlatformDefaults = {
-  tone: "professional",
-  hashtags: "",
-  cta: "",
-  style: "concise",
-  includeEmoji: true,
-  autoApprove: false,
-}
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default function SettingsPage() {
-  const [saved, setSaved] = useState(false)
-  const [platformSettings, setPlatformSettings] = useState<Record<string, PlatformDefaults>>(
+  const [userId, setUserId] = useState<string | null>(null)
+
+  // Profile state
+  const [profile,       setProfile]       = useState<WorkspaceProfile>(DEFAULT_PROFILE)
+  const [profileStatus, setProfileStatus] = useState<SaveStatus>("idle")
+  const [profileError,  setProfileError]  = useState<string | null>(null)
+
+  // Platform defaults state
+  const [platformSettings,   setPlatformSettings]   = useState<PlatformDefaults>(() =>
     Object.fromEntries(
       PLATFORM_REGISTRY.map((p) => [
         p.id,
-        { ...DEFAULT_PLATFORM_SETTINGS, tone: p.aiConfig.toneDefault, includeEmoji: p.aiConfig.emojiStyle !== 'none' },
+        {
+          ...DEFAULT_PLATFORM_SETTING,
+          tone:         p.aiConfig.toneDefault,
+          includeEmoji: p.aiConfig.emojiStyle !== "none",
+        },
       ])
     )
   )
+  const [platformStatus, setPlatformStatus] = useState<SaveStatus>("idle")
+  const [platformError,  setPlatformError]  = useState<string | null>(null)
   const [expandedPlatform, setExpandedPlatform] = useState<string | null>(null)
+  const [loadingSettings,  setLoadingSettings]  = useState(true)
 
-  function handleSave() {
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+  // -------------------------------------------------------------------------
+  // Load settings on mount
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    async function load() {
+      const supabase = getSupabase()
+      if (!supabase) { setLoadingSettings(false); return }
+
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) { setLoadingSettings(false); return }
+
+      setUserId(user.id)
+
+      const [savedProfile, savedPlatforms] = await Promise.all([
+        loadSettings<WorkspaceProfile>(supabase, user.id, "workspace_profile", DEFAULT_PROFILE),
+        loadSettings<PlatformDefaults>(supabase, user.id, "platform_defaults", {}),
+      ])
+
+      setProfile(savedProfile)
+
+      // Merge saved settings over the defaults (preserves default tone/emoji for platforms not yet saved)
+      if (Object.keys(savedPlatforms).length > 0) {
+        setPlatformSettings((prev) => {
+          const merged = { ...prev }
+          for (const id of Object.keys(savedPlatforms)) {
+            merged[id] = { ...prev[id], ...savedPlatforms[id] }
+          }
+          return merged
+        })
+      }
+
+      setLoadingSettings(false)
+    }
+    load()
+  }, [])
+
+  // -------------------------------------------------------------------------
+  // Save profile
+  // -------------------------------------------------------------------------
+  async function handleSaveProfile() {
+    if (!userId) return
+    const supabase = getSupabase()
+    if (!supabase) return
+
+    setProfileStatus("saving")
+    setProfileError(null)
+
+    const { error } = await saveSettings(supabase, userId, "workspace_profile", profile)
+    if (error) {
+      setProfileError(error)
+      setProfileStatus("error")
+    } else {
+      setProfileStatus("saved")
+      setTimeout(() => setProfileStatus("idle"), 2500)
+    }
   }
 
-  function updatePlatformSetting(platformId: string, key: keyof PlatformDefaults, value: string | boolean) {
+  // -------------------------------------------------------------------------
+  // Save platform defaults
+  // -------------------------------------------------------------------------
+  async function handleSavePlatformDefaults() {
+    if (!userId) return
+    const supabase = getSupabase()
+    if (!supabase) return
+
+    setPlatformStatus("saving")
+    setPlatformError(null)
+
+    const { error } = await saveSettings(supabase, userId, "platform_defaults", platformSettings)
+    if (error) {
+      setPlatformError(error)
+      setPlatformStatus("error")
+    } else {
+      setPlatformStatus("saved")
+      setTimeout(() => setPlatformStatus("idle"), 2500)
+    }
+  }
+
+  function updatePlatformSetting(platformId: string, key: keyof PlatformDefaultSettings, value: string | boolean) {
     setPlatformSettings((prev) => ({
       ...prev,
       [platformId]: { ...prev[platformId], [key]: value },
@@ -68,6 +163,55 @@ export default function SettingsPage() {
     const light = PLATFORM_LIGHT_CLASS[id as AllPlatformId] ?? "bg-muted text-muted-foreground"
     const dark  = PLATFORM_DARK_CLASS[id as AllPlatformId]  ?? ""
     return `${light} ${dark}`
+  }
+
+  function SaveButton({
+    status,
+    error,
+    onClick,
+    label = "Save changes",
+    size = "default",
+  }: {
+    status: SaveStatus
+    error: string | null
+    onClick: () => void
+    label?: string
+    size?: "default" | "sm"
+  }) {
+    return (
+      <div className="flex items-center gap-2">
+        {error && (
+          <span className="flex items-center gap-1 text-xs text-destructive">
+            <AlertCircle className="h-3.5 w-3.5" /> {error}
+          </span>
+        )}
+        {status === "saved" && (
+          <span className="flex items-center gap-1 text-xs text-green-600">
+            <CheckCircle2 className="h-3.5 w-3.5" /> Saved
+          </span>
+        )}
+        <Button
+          size={size}
+          onClick={onClick}
+          disabled={status === "saving" || !userId}
+          variant={size === "sm" ? "outline" : "default"}
+        >
+          {status === "saving" && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+          {status === "saving" ? "Saving…" : label}
+        </Button>
+      </div>
+    )
+  }
+
+  if (loadingSettings) {
+    return (
+      <div className="flex flex-col flex-1">
+        <Header title="Settings" />
+        <main className="flex-1 flex items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </main>
+      </div>
+    )
   }
 
   return (
@@ -98,26 +242,49 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label htmlFor="org-name">Organization name</Label>
-                    <Input id="org-name" defaultValue="Example Corp" />
+                    <Input
+                      id="org-name"
+                      value={profile.orgName}
+                      onChange={(e) => setProfile((p) => ({ ...p, orgName: e.target.value }))}
+                      placeholder="Your organization"
+                    />
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="org-url">Website URL</Label>
-                    <Input id="org-url" defaultValue="https://example.com" />
+                    <Input
+                      id="org-url"
+                      value={profile.websiteUrl}
+                      onChange={(e) => setProfile((p) => ({ ...p, websiteUrl: e.target.value }))}
+                      placeholder="https://example.com"
+                    />
                   </div>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="timezone">Timezone</Label>
-                  <Input id="timezone" defaultValue="UTC-5 (Eastern Time)" />
+                  <Input
+                    id="timezone"
+                    value={profile.timezone}
+                    onChange={(e) => setProfile((p) => ({ ...p, timezone: e.target.value }))}
+                    placeholder="UTC"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="contact-email">Contact email</Label>
-                  <Input id="contact-email" type="email" defaultValue="admin@example.com" />
+                  <Input
+                    id="contact-email"
+                    type="email"
+                    value={profile.contactEmail}
+                    onChange={(e) => setProfile((p) => ({ ...p, contactEmail: e.target.value }))}
+                    placeholder="admin@example.com"
+                  />
                 </div>
                 <Separator />
                 <div className="flex justify-end">
-                  <Button onClick={handleSave}>
-                    {saved ? "Saved!" : "Save changes"}
-                  </Button>
+                  <SaveButton
+                    status={profileStatus}
+                    error={profileError}
+                    onClick={handleSaveProfile}
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -129,35 +296,47 @@ export default function SettingsPage() {
           <TabsContent value="platforms" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Platform Defaults</CardTitle>
-                <CardDescription>
-                  Configure default AI generation settings per platform. These are used when no
-                  per-campaign overrides are specified.
-                </CardDescription>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <CardTitle>Platform AI Defaults</CardTitle>
+                    <CardDescription className="mt-1">
+                      Configure default tone, style, hashtags, and CTA for AI-generated posts
+                      per platform. These settings apply when generating content on the Content page.
+                    </CardDescription>
+                  </div>
+                  <SaveButton
+                    status={platformStatus}
+                    error={platformError}
+                    onClick={handleSavePlatformDefaults}
+                    label="Save all"
+                    size="sm"
+                  />
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="divide-y">
                   {PLATFORM_REGISTRY.map((platform) => {
-                    const settings = platformSettings[platform.id] ?? DEFAULT_PLATFORM_SETTINGS
+                    const settings   = platformSettings[platform.id] ?? DEFAULT_PLATFORM_SETTING
                     const isExpanded = expandedPlatform === platform.id
+                    const limits     = (PLATFORM_LIMITS_MAP as Record<string, { charLimit: number; hashtagCount: number }>)[platform.id]
 
                     return (
                       <div key={platform.id} className="px-4 lg:px-6">
-                        {/* Platform row header */}
                         <button
                           type="button"
                           onClick={() => setExpandedPlatform(isExpanded ? null : platform.id)}
                           className="w-full flex items-center gap-3 py-3.5 text-left hover:bg-transparent"
                         >
                           <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${platformClass(platform.id)}`}>
-                            {platform.ui.abbrev}
+                            {PLATFORM_ABBREV[platform.id as AllPlatformId] ?? platform.id.slice(0, 2).toUpperCase()}
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium">
-                              {PLATFORM_LABELS[platform.id as AllPlatformId]}
+                              {PLATFORM_LABELS[platform.id as AllPlatformId] ?? platform.id}
                             </p>
                             <p className="text-xs text-muted-foreground capitalize">
                               {platform.category} · {settings.tone} · {settings.style}
+                              {limits && ` · ${limits.charLimit.toLocaleString()} chars`}
                             </p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
@@ -170,9 +349,16 @@ export default function SettingsPage() {
                           </div>
                         </button>
 
-                        {/* Expanded settings */}
                         {isExpanded && (
                           <div className="pb-4 space-y-4 border-t pt-4">
+                            {limits && (
+                              <div className="flex flex-wrap gap-3 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                                <span>Max chars: <strong className="text-foreground">{limits.charLimit.toLocaleString()}</strong></span>
+                                <span>Max hashtags: <strong className="text-foreground">{limits.hashtagCount}</strong></span>
+                                <span>Category: <strong className="text-foreground capitalize">{platform.category}</strong></span>
+                              </div>
+                            )}
+
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                               <div className="space-y-1.5">
                                 <Label className="text-xs">Default Tone</Label>
@@ -209,7 +395,7 @@ export default function SettingsPage() {
                                 className="text-sm"
                               />
                               <p className="text-[11px] text-muted-foreground">
-                                These tags will be added to every generated post for this platform.
+                                Added to every generated post for this platform. Prefix with # for hashtag platforms.
                               </p>
                             </div>
 
@@ -221,6 +407,9 @@ export default function SettingsPage() {
                                 onChange={(e) => updatePlatformSetting(platform.id, "cta", e.target.value)}
                                 className="text-sm"
                               />
+                              <p className="text-[11px] text-muted-foreground">
+                                Appended to the AI prompt to guide the generated call-to-action.
+                              </p>
                             </div>
 
                             <div className="flex items-center justify-between gap-4">
@@ -237,24 +426,32 @@ export default function SettingsPage() {
                             <div className="flex items-center justify-between gap-4">
                               <div>
                                 <p className="text-xs font-medium">Auto-Approve Generated Content</p>
-                                <p className="text-[11px] text-muted-foreground">Skip manual approval for this platform</p>
+                                <p className="text-[11px] text-muted-foreground">Mark as approved automatically — skip manual review</p>
                               </div>
                               <Switch
                                 checked={settings.autoApprove}
                                 onCheckedChange={(v) => updatePlatformSetting(platform.id, "autoApprove", v)}
                               />
                             </div>
-
-                            <div className="flex justify-end pt-1">
-                              <Button size="sm" onClick={handleSave} variant="outline">
-                                {saved ? "Saved!" : "Save platform defaults"}
-                              </Button>
-                            </div>
                           </div>
                         )}
                       </div>
                     )
                   })}
+                </div>
+
+                <div className="px-4 lg:px-6 py-4 border-t bg-muted/20">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-xs text-muted-foreground">
+                      Changes affect all future AI generations. Existing posts are not modified.
+                    </p>
+                    <SaveButton
+                      status={platformStatus}
+                      error={platformError}
+                      onClick={handleSavePlatformDefaults}
+                      label="Save all platform defaults"
+                    />
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -271,12 +468,12 @@ export default function SettingsPage() {
               </CardHeader>
               <CardContent className="space-y-0 divide-y">
                 {[
-                  { id: "post-fail", label: "Post failures", desc: "Get notified when a post fails to publish", default: true },
-                  { id: "post-success", label: "Post published", desc: "Confirmation when posts go live", default: false },
-                  { id: "campaign-end", label: "Campaign completed", desc: "Summary when a campaign finishes", default: true },
-                  { id: "rate-limit", label: "Rate limit warnings", desc: "Alert when approaching platform limits", default: true },
-                  { id: "auth-expire", label: "Auth token expiry", desc: "Reminder before platform tokens expire", default: true },
-                  { id: "weekly-report", label: "Weekly digest", desc: "Weekly performance summary email", default: false },
+                  { id: "post-fail",     label: "Post failures",         desc: "Get notified when a post fails to publish",           default: true  },
+                  { id: "post-success",  label: "Post published",        desc: "Confirmation when posts go live",                     default: false },
+                  { id: "campaign-end",  label: "Campaign completed",    desc: "Summary when a campaign finishes",                    default: true  },
+                  { id: "rate-limit",    label: "Rate limit warnings",   desc: "Alert when approaching platform limits",              default: true  },
+                  { id: "auth-expire",   label: "Auth token expiry",     desc: "Reminder before platform tokens expire",              default: true  },
+                  { id: "weekly-report", label: "Weekly digest",         desc: "Weekly performance summary email",                    default: false },
                 ].map((item) => (
                   <div key={item.id} className="flex items-center justify-between py-4 gap-4">
                     <div>
@@ -305,9 +502,9 @@ export default function SettingsPage() {
               <CardContent className="p-0">
                 <div className="divide-y">
                   {[
-                    { name: "Alex Chen", email: "alex@example.com", role: "Admin", initials: "AC" },
+                    { name: "Alex Chen",    email: "alex@example.com",  role: "Admin",  initials: "AC" },
                     { name: "Jamie Rivera", email: "jamie@example.com", role: "Editor", initials: "JR" },
-                    { name: "Sam Patel", email: "sam@example.com", role: "Viewer", initials: "SP" },
+                    { name: "Sam Patel",    email: "sam@example.com",   role: "Viewer", initials: "SP" },
                   ].map((member) => (
                     <div key={member.email} className="flex items-center gap-3 px-6 py-3.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-medium shrink-0">
@@ -351,7 +548,7 @@ export default function SettingsPage() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {[
-                    { name: "Pro", price: "$29/mo", features: ["25 connections", "Unlimited campaigns", "Priority support"] },
+                    { name: "Pro",      price: "$29/mo", features: ["25 connections", "Unlimited campaigns", "Priority support"] },
                     { name: "Business", price: "$99/mo", features: ["Unlimited connections", "Team access", "Custom branding"] },
                   ].map((plan) => (
                     <div key={plan.name} className="rounded-lg border p-4 space-y-3">
@@ -405,4 +602,27 @@ export default function SettingsPage() {
       </main>
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Platform char limits map (for display in settings)
+// ---------------------------------------------------------------------------
+const PLATFORM_LIMITS_MAP: Record<string, { charLimit: number; hashtagCount: number }> = {
+  twitter:    { charLimit: 280,   hashtagCount: 2  },
+  linkedin:   { charLimit: 3000,  hashtagCount: 5  },
+  instagram:  { charLimit: 2200,  hashtagCount: 15 },
+  facebook:   { charLimit: 63206, hashtagCount: 3  },
+  tiktok:     { charLimit: 2200,  hashtagCount: 6  },
+  bluesky:    { charLimit: 300,   hashtagCount: 2  },
+  mastodon:   { charLimit: 500,   hashtagCount: 4  },
+  misskey:    { charLimit: 3000,  hashtagCount: 5  },
+  pixelfed:   { charLimit: 2200,  hashtagCount: 10 },
+  tumblr:     { charLimit: 4096,  hashtagCount: 10 },
+  devto:      { charLimit: 5000,  hashtagCount: 4  },
+  hashnode:   { charLimit: 5000,  hashtagCount: 5  },
+  reddit:     { charLimit: 40000, hashtagCount: 0  },
+  diigo:      { charLimit: 500,   hashtagCount: 5  },
+  raindrop:   { charLimit: 500,   hashtagCount: 5  },
+  pocket:     { charLimit: 200,   hashtagCount: 5  },
+  instapaper: { charLimit: 200,   hashtagCount: 0  },
 }
