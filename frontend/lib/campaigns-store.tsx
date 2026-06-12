@@ -112,8 +112,10 @@ export function CampaignsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const createCampaign = useCallback(async (input: CreateCampaignInput): Promise<Campaign> => {
-    const optimisticId = `c${Date.now()}`
+    const optimisticId = crypto.randomUUID()
     const optimistic: Campaign = { ...input, id: optimisticId }
+
+    setCampaigns((prev) => [optimistic, ...prev])
 
     const supabase = getSupabase()
     if (supabase) {
@@ -123,7 +125,6 @@ export function CampaignsProvider({ children }: { children: ReactNode }) {
           const { data, error } = await supabase
             .from("campaigns")
             .insert({
-              id:              optimisticId,
               user_id:         user.id,
               name:            input.name,
               description:     input.description || null,
@@ -148,7 +149,7 @@ export function CampaignsProvider({ children }: { children: ReactNode }) {
             setDbError(error.message)
           } else if (data) {
             const saved = rowToCampaign(data)
-            setCampaigns((prev) => [saved, ...prev])
+            setCampaigns((prev) => prev.map((c) => c.id === optimisticId ? saved : c))
             setDbError(null)
             return saved
           }
@@ -159,7 +160,6 @@ export function CampaignsProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    setCampaigns((prev) => [optimistic, ...prev])
     return optimistic
   }, [])
 

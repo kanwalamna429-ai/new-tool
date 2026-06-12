@@ -8,6 +8,11 @@ export type { AllPlatformId, PlatformCategory, AuthType, CredentialField,
   PlatformCapabilities, PlatformAiConfig, PlatformUiConfig, PlatformConfig,
   PlatformConnection, PlatformSettings, PlatformContent } from './types'
 
+import { twitter }     from './config/twitter'
+import { linkedin }    from './config/linkedin'
+import { instagram }   from './config/instagram'
+import { facebook }    from './config/facebook'
+import { tiktok }      from './config/tiktok'
 import { bluesky }     from './config/bluesky'
 import { mastodon }    from './config/mastodon'
 import { misskey }     from './config/misskey'
@@ -23,18 +28,26 @@ import { instapaper }  from './config/instapaper'
 import type { AllPlatformId, PlatformCategory, PlatformConfig } from './types'
 
 // ---------------------------------------------------------------------------
-// Full registry — ordered by category then name
+// Full registry — ordered by category then name (all 17 platforms)
 // ---------------------------------------------------------------------------
 
 export const PLATFORM_REGISTRY: PlatformConfig[] = [
+  // Social
+  twitter,
+  linkedin,
+  instagram,
+  facebook,
+  tiktok,
   bluesky,
   mastodon,
   misskey,
   pixelfed,
   tumblr,
+  // Publishing
   devto,
   hashnode,
   reddit,
+  // Bookmarking
   diigo,
   raindrop,
   pocket,
