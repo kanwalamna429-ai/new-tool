@@ -13,17 +13,19 @@ import {
   Zap,
   Menu,
   X,
+  FileEdit,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
-  { href: "/url-library", label: "URL Library", icon: Link2 },
-  { href: "/connections", label: "Connections", icon: Plug2 },
-  { href: "/logs", label: "Logs", icon: ScrollText },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/dashboard",   label: "Dashboard",   icon: LayoutDashboard },
+  { href: "/campaigns",   label: "Campaigns",   icon: Megaphone       },
+  { href: "/content",     label: "Content",     icon: FileEdit        },
+  { href: "/url-library", label: "URL Library", icon: Link2           },
+  { href: "/connections", label: "Connections", icon: Plug2           },
+  { href: "/logs",        label: "Logs",        icon: ScrollText      },
+  { href: "/settings",    label: "Settings",    icon: Settings        },
 ]
 
 export function MobileNav() {

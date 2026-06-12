@@ -11,12 +11,14 @@ import {
   Settings,
   Zap,
   LogOut,
+  FileEdit,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const navItems = [
   { href: "/dashboard",   label: "Dashboard",   icon: LayoutDashboard },
   { href: "/campaigns",   label: "Campaigns",   icon: Megaphone        },
+  { href: "/content",     label: "Content",     icon: FileEdit         },
   { href: "/url-library", label: "URL Library", icon: Link2            },
   { href: "/connections", label: "Connections", icon: Plug2            },
   { href: "/logs",        label: "Logs",        icon: ScrollText       },
