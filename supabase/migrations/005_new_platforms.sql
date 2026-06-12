@@ -43,18 +43,21 @@ COMMENT ON COLUMN public.platform_connections.publication_host IS
   'Publication domain for Hashnode (e.g. yourblog.hashnode.dev).';
 
 -- 4. Drop existing auto-named platform CHECK constraint and recreate with expanded list
+-- NOTE: Postgres stores CHECK (platform IN (...)) as CHECK ((platform = ANY (ARRAY[...])))
+--       internally, so we must match the normalised form.
 DO $$
 DECLARE
   v_name TEXT;
 BEGIN
-  SELECT conname INTO v_name
-  FROM pg_constraint
-  WHERE conrelid = 'public.platform_connections'::regclass
-    AND contype = 'c'
-    AND pg_get_constraintdef(oid) ILIKE '%platform IN%';
-  IF v_name IS NOT NULL THEN
+  FOR v_name IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'public.platform_connections'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%platform = ANY (ARRAY[%'
+  LOOP
     EXECUTE format('ALTER TABLE public.platform_connections DROP CONSTRAINT %I', v_name);
-  END IF;
+  END LOOP;
 END;
 $$;
 
@@ -78,14 +81,15 @@ ALTER TABLE public.platform_connections
 DO $$
 DECLARE v_name TEXT;
 BEGIN
-  SELECT conname INTO v_name
-  FROM pg_constraint
-  WHERE conrelid = 'public.generated_content'::regclass
-    AND contype = 'c'
-    AND pg_get_constraintdef(oid) ILIKE '%platform IN%';
-  IF v_name IS NOT NULL THEN
+  FOR v_name IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'public.generated_content'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%platform = ANY (ARRAY[%'
+  LOOP
     EXECUTE format('ALTER TABLE public.generated_content DROP CONSTRAINT %I', v_name);
-  END IF;
+  END LOOP;
 END;
 $$;
 
@@ -109,14 +113,15 @@ ALTER TABLE public.generated_content
 DO $$
 DECLARE v_name TEXT;
 BEGIN
-  SELECT conname INTO v_name
-  FROM pg_constraint
-  WHERE conrelid = 'public.scheduled_posts'::regclass
-    AND contype = 'c'
-    AND pg_get_constraintdef(oid) ILIKE '%platform IN%';
-  IF v_name IS NOT NULL THEN
+  FOR v_name IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'public.scheduled_posts'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%platform = ANY (ARRAY[%'
+  LOOP
     EXECUTE format('ALTER TABLE public.scheduled_posts DROP CONSTRAINT %I', v_name);
-  END IF;
+  END LOOP;
 END;
 $$;
 
@@ -140,14 +145,15 @@ ALTER TABLE public.scheduled_posts
 DO $$
 DECLARE v_name TEXT;
 BEGIN
-  SELECT conname INTO v_name
-  FROM pg_constraint
-  WHERE conrelid = 'public.published_posts'::regclass
-    AND contype = 'c'
-    AND pg_get_constraintdef(oid) ILIKE '%platform IN%';
-  IF v_name IS NOT NULL THEN
+  FOR v_name IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'public.published_posts'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%platform = ANY (ARRAY[%'
+  LOOP
     EXECUTE format('ALTER TABLE public.published_posts DROP CONSTRAINT %I', v_name);
-  END IF;
+  END LOOP;
 END;
 $$;
 
@@ -171,14 +177,15 @@ ALTER TABLE public.published_posts
 DO $$
 DECLARE v_name TEXT;
 BEGIN
-  SELECT conname INTO v_name
-  FROM pg_constraint
-  WHERE conrelid = 'public.system_logs'::regclass
-    AND contype = 'c'
-    AND pg_get_constraintdef(oid) ILIKE '%platform IN%';
-  IF v_name IS NOT NULL THEN
+  FOR v_name IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'public.system_logs'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%platform = ANY (ARRAY[%'
+  LOOP
     EXECUTE format('ALTER TABLE public.system_logs DROP CONSTRAINT %I', v_name);
-  END IF;
+  END LOOP;
 END;
 $$;
 
