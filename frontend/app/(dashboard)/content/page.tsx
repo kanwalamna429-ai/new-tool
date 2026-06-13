@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { PLATFORM_REGISTRY } from "@/lib/platforms"
+import { PLATFORM_BY_ID } from "@/lib/platforms"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -146,7 +146,7 @@ function PostPreview({
   rewrittenTitle, rewrittenDesc, ogImage, sourceUrl, connectionId,
   publishState, publishError, publishSuccess, onPublish, error,
 }: PostPreviewProps) {
-  const cfg        = PLATFORM_REGISTRY[platform as keyof typeof PLATFORM_REGISTRY]
+  const cfg        = PLATFORM_BY_ID[platform]
   const hasConn    = !!connectionId
   const hasAdapter = PLATFORMS_WITH_ADAPTERS.has(platform)
   const canPublish = hasConn && hasAdapter
@@ -157,7 +157,7 @@ function PostPreview({
     <div className="rounded-lg border bg-card overflow-hidden">
       {/* Platform header */}
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b bg-muted/30">
-        <span className="text-sm font-semibold">{cfg?.name ?? platform}</span>
+        <span className="text-sm font-semibold">{cfg?.ui.displayName ?? platform}</span>
         <div className="flex items-center gap-2">
           {charLimit > 0 && (
             <span className={cn("text-xs tabular-nums", overLimit ? "text-destructive font-medium" : "text-muted-foreground")}>
@@ -491,7 +491,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
   }
 
   const availablePlatforms = campaign.platforms.filter(
-    (p) => PLATFORM_REGISTRY[p as keyof typeof PLATFORM_REGISTRY]
+    (p) => PLATFORM_BY_ID[p]
   )
 
   function togglePlatform(p: string) {
@@ -618,7 +618,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
             <p className="text-xs font-medium text-muted-foreground mb-2">Generate posts for</p>
             <div className="flex flex-wrap gap-1.5">
               {availablePlatforms.map((p) => {
-                const cfg      = PLATFORM_REGISTRY[p as keyof typeof PLATFORM_REGISTRY]
+                const cfg      = PLATFORM_BY_ID[p]
                 const selected = selectedPlatforms.includes(p)
                 const hasConn  = connections.some((c) => c.platform === p && c.status === "connected")
                 return (
@@ -632,7 +632,7 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
                         : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
                     )}
                   >
-                    {cfg?.name ?? p}
+                    {cfg?.ui.displayName ?? p}
                     {!hasConn && <span className="opacity-40 text-[9px]">●</span>}
                   </button>
                 )
@@ -829,11 +829,11 @@ export default function ContentPage() {
             <div className="flex flex-wrap gap-1.5 items-center">
               <span className="text-xs text-muted-foreground">Targets:</span>
               {selectedCampaign.platforms.map((p) => {
-                const cfg     = PLATFORM_REGISTRY[p as keyof typeof PLATFORM_REGISTRY]
+                const cfg     = PLATFORM_BY_ID[p]
                 const hasConn = connections.some((c) => c.platform === p && c.status === "connected")
                 return (
                   <Badge key={p} variant={hasConn ? "default" : "outline"} className="text-xs">
-                    {cfg?.name ?? p}
+                    {cfg?.ui.displayName ?? p}
                     {!hasConn && <span className="ml-1 opacity-60">disconnected</span>}
                   </Badge>
                 )

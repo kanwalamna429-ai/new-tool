@@ -206,11 +206,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const limits = PLATFORM_LIMITS[platform as SocialPlatform]
     const charLimit = limits?.charLimit ?? 500
 
-    // Per-platform settings from user's saved defaults
+    // Per-platform settings: start from code defaults, then apply DB-saved user settings
+    const platformBaseDefaults = platformConfig ? {
+      tone:         platformConfig.aiConfig.toneDefault as string,
+      includeEmoji: platformConfig.aiConfig.emojiStyle !== 'none',
+    } : {}
     const pSettings: PlatformDefaultSettings = {
       ...DEFAULT_PLATFORM_SETTING,
-      tone:         platformConfig?.aiConfig.toneDefault ?? 'professional',
-      includeEmoji: (platformConfig?.aiConfig.emojiStyle ?? 'moderate') !== 'none',
+      ...platformBaseDefaults,
       ...(platformDefaults[platform] ?? {}),
     }
 

@@ -1,0 +1,3 @@
+- [Settings persistence](settings-persistence.md) — platform_defaults + workspace_profile saved to public.settings (key/value JSONB, unique user_id+key); load via loadSettings(), save via saveSettings().
+- [Content page patterns](content-page-patterns.md) — getSupabase() try/catch wrapper required in all "use client" components; use PLATFORM_BY_ID[id] not PLATFORM_REGISTRY[id as keyof]; platform name is cfg.ui.displayName not cfg.name.
+- [Generate route enrichment](generate-route.md) — AI title/description rewritten once per URL (shared across platforms); each generated_content.metadata includes og_image, rewritten_title, rewritten_description, source_url, char_limit, tone, style.
