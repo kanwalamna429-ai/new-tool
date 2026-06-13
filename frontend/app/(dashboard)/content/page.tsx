@@ -3,7 +3,9 @@
 import { useState, useEffect, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { PLATFORM_BY_ID } from "@/lib/platforms"
+import { Header } from "@/components/layout/header"
+import { useCampaigns } from "@/lib/campaigns-store"
+import { PLATFORM_BY_ID, PLATFORM_LIGHT_CLASS, PLATFORM_DARK_CLASS, type AllPlatformId } from "@/lib/platforms"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -16,29 +18,17 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  Loader2,
-  RefreshCw,
-  Sparkles,
-  Send,
-  CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  Globe,
-  FileText,
-  Tag,
-  User,
-  Calendar,
-  Image as ImageIcon,
-  Link as LinkIcon,
-  Hash,
-  AlertCircle,
+  Loader2, RefreshCw, Sparkles, Send, CheckCircle2,
+  ChevronDown, ChevronUp, Globe, FileText, Tag, User,
+  Calendar, Image as ImageIcon, Link as LinkIcon, Hash,
+  AlertCircle, Clock, CalendarDays, Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import type { Campaign } from "@/lib/mock-data"
 
 // ---------------------------------------------------------------------------
 // Supabase helper
 // ---------------------------------------------------------------------------
-
 function getSupabase(): SupabaseClient | null {
   try { return createClient() } catch { return null }
 }
@@ -46,13 +36,6 @@ function getSupabase(): SupabaseClient | null {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface Campaign {
-  id:        string
-  name:      string
-  status:    string
-  platforms: string[]
-}
 
 interface CampaignUrl {
   id:           string
@@ -72,11 +55,10 @@ interface ExtractedContent {
   published_at: string | null
 }
 
-interface PlatformConnection {
-  id:           string
-  platform:     string
-  display_name: string | null
-  status:       string
+interface Connection {
+  id:       string
+  platform: string
+  status:   string
 }
 
 interface GeneratedPost {
@@ -84,6 +66,7 @@ interface GeneratedPost {
   content:            string
   hashtags:           string[]
   charLimit:          number
+  scheduledAt:        string
   generatedContentId: string
   scheduledPostId:    string
   connectionId:       string | null
@@ -96,21 +79,32 @@ interface GenerateResponse {
   rewrittenDescription: string | null
   ogImage:              string | null
   sourceUrl:            string | null
+  scheduledAt:          string | null
   posts:                GeneratedPost[]
   error?:               string
 }
 
 type ExtractState  = "idle" | "extracting" | "done" | "error"
-type GenerateState = "idle" | "generating" | "done" | "error"
+type GenerateState = "idle" | "generating" | "done"
 type PublishState  = "idle" | "publishing" | "done" | "error"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function formatHost(url: string): string {
-  try { return new URL(url).hostname.replace(/^www\./, "") }
-  catch { return url }
+  try { return new URL(url).hostname.replace(/^www\./, "") } catch { return url }
+}
+
+function formatScheduledAt(iso: string | null): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  const now = new Date()
+  const diffMs = d.getTime() - now.getTime()
+  if (diffMs < 0) return "Scheduled (overdue)"
+  if (diffMs < 60_000) return "In less than a minute"
+  if (diffMs < 3_600_000) return `In ${Math.round(diffMs / 60_000)} min`
+  if (diffMs < 86_400_000) return `In ${Math.round(diffMs / 3_600_000)} hr`
+  return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
 }
 
 const PLATFORMS_WITH_ADAPTERS = new Set([
@@ -119,172 +113,190 @@ const PLATFORMS_WITH_ADAPTERS = new Set([
 ])
 
 // ---------------------------------------------------------------------------
-// Post Preview Card — renders the full composed post (image + title + desc + body + url + tags)
+// Platform dot badge
 // ---------------------------------------------------------------------------
-
-interface PostPreviewProps {
-  platform:           string
-  content:            string
-  editedContent:      string
-  onEditContent:      (val: string) => void
-  hashtags:           string[]
-  charLimit:          number
-  rewrittenTitle:     string | null
-  rewrittenDesc:      string | null
-  ogImage:            string | null
-  sourceUrl:          string | null
-  connectionId:       string | null
-  publishState:       PublishState
-  publishError:       string
-  publishSuccess:     boolean
-  onPublish:          () => void
-  error?:             string
+function PlatformDot({ id, connected }: { id: string; connected: boolean }) {
+  const light = PLATFORM_LIGHT_CLASS[id as AllPlatformId] ?? "bg-muted text-muted-foreground"
+  const dark  = PLATFORM_DARK_CLASS[id as AllPlatformId]  ?? ""
+  const cfg   = PLATFORM_BY_ID[id]
+  return (
+    <span
+      title={`${cfg?.ui.displayName ?? id} — ${connected ? "connected" : "disconnected"}`}
+      className={cn(
+        "inline-flex h-5 w-5 items-center justify-center rounded text-[9px] font-bold shrink-0",
+        light, dark,
+        !connected && "opacity-40"
+      )}
+    >
+      {cfg?.ui.abbrev ?? id.slice(0, 2).toUpperCase()}
+    </span>
+  )
 }
 
-function PostPreview({
-  platform, content, editedContent, onEditContent, hashtags, charLimit,
-  rewrittenTitle, rewrittenDesc, ogImage, sourceUrl, connectionId,
-  publishState, publishError, publishSuccess, onPublish, error,
-}: PostPreviewProps) {
-  const cfg        = PLATFORM_BY_ID[platform]
-  const hasConn    = !!connectionId
-  const hasAdapter = PLATFORMS_WITH_ADAPTERS.has(platform)
-  const canPublish = hasConn && hasAdapter
+// ---------------------------------------------------------------------------
+// Generated post card
+// ---------------------------------------------------------------------------
+interface PostCardProps {
+  post:           GeneratedPost
+  rewrittenTitle: string | null
+  rewrittenDesc:  string | null
+  ogImage:        string | null
+  sourceUrl:      string | null
+  editedContent:  string
+  onChange:       (v: string) => void
+  publishState:   PublishState
+  publishError:   string
+  publishSuccess: boolean
+  onPublish:      () => void
+}
+
+function PostCard({
+  post, rewrittenTitle, rewrittenDesc, ogImage, sourceUrl,
+  editedContent, onChange, publishState, publishError, publishSuccess, onPublish,
+}: PostCardProps) {
+  const cfg        = PLATFORM_BY_ID[post.platform]
+  const hasAdapter = PLATFORMS_WITH_ADAPTERS.has(post.platform)
+  const canPublish = !!post.connectionId && hasAdapter
   const charCount  = editedContent.length
-  const overLimit  = charLimit > 0 && charCount > charLimit
+  const overLimit  = post.charLimit > 0 && charCount > post.charLimit
+
+  const light = PLATFORM_LIGHT_CLASS[post.platform as AllPlatformId] ?? "bg-muted text-muted-foreground"
+  const dark  = PLATFORM_DARK_CLASS[post.platform as AllPlatformId]  ?? ""
 
   return (
     <div className="rounded-lg border bg-card overflow-hidden">
-      {/* Platform header */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b bg-muted/30">
-        <span className="text-sm font-semibold">{cfg?.ui.displayName ?? platform}</span>
-        <div className="flex items-center gap-2">
-          {charLimit > 0 && (
-            <span className={cn("text-xs tabular-nums", overLimit ? "text-destructive font-medium" : "text-muted-foreground")}>
-              {charCount}/{charLimit}
+      {/* Platform header strip */}
+      <div className={cn("flex items-center justify-between gap-2 px-3 py-2", light, dark)}>
+        <span className="text-xs font-bold tracking-wide uppercase">
+          {cfg?.ui.displayName ?? post.platform}
+        </span>
+        <div className="flex items-center gap-1.5">
+          {post.charLimit > 0 && (
+            <span className={cn(
+              "text-[10px] tabular-nums font-medium",
+              overLimit ? "text-destructive bg-white/80 px-1 rounded" : "opacity-70"
+            )}>
+              {charCount}/{post.charLimit.toLocaleString()}
             </span>
           )}
-          {publishSuccess ? (
-            <Badge className="text-xs gap-1 bg-green-500/10 text-green-600 border-green-200 hover:bg-green-500/10">
-              <CheckCircle2 className="h-3 w-3" /> Published
-            </Badge>
-          ) : publishState === "error" ? (
-            <Badge variant="destructive" className="text-xs">Failed</Badge>
-          ) : !hasAdapter ? (
-            <Badge variant="outline" className="text-xs text-muted-foreground">No adapter yet</Badge>
-          ) : !hasConn ? (
-            <Badge variant="outline" className="text-xs text-amber-600 border-amber-200 bg-amber-50">No connection</Badge>
-          ) : (
-            <Badge variant="outline" className="text-xs text-green-600 border-green-200 bg-green-50">Ready</Badge>
-          )}
+          {publishSuccess
+            ? <Badge className="text-[10px] h-4 gap-0.5 bg-white/20 text-current border-current/20"><CheckCircle2 className="h-2.5 w-2.5" /> Published</Badge>
+            : publishState === "error"
+            ? <Badge variant="destructive" className="text-[10px] h-4">Failed</Badge>
+            : !hasAdapter
+            ? <Badge variant="outline" className="text-[10px] h-4 bg-white/20 border-current/20 text-current">No adapter</Badge>
+            : !post.connectionId
+            ? <Badge variant="outline" className="text-[10px] h-4 bg-white/20 border-current/20 text-current">Not connected</Badge>
+            : <Badge variant="outline" className="text-[10px] h-4 bg-white/20 border-current/20 text-current">Ready</Badge>
+          }
         </div>
       </div>
 
-      {/* Post composition preview */}
-      <div className="p-4 space-y-3">
+      <div className="p-3 space-y-3">
         {/* Featured image */}
         {ogImage && (
-          <div className="rounded-lg overflow-hidden border bg-muted/30 aspect-video relative">
+          <div className="rounded-md overflow-hidden border bg-muted/30 relative">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={ogImage}
               alt="Featured"
-              className="w-full h-full object-cover"
-              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none" }}
+              className="w-full h-28 object-cover"
+              onError={(e) => { (e.currentTarget as HTMLImageElement).parentElement!.style.display = "none" }}
             />
-            <div className="absolute bottom-2 left-2">
-              <Badge variant="secondary" className="text-[10px] gap-1 opacity-80">
-                <ImageIcon className="h-2.5 w-2.5" /> Featured image
-              </Badge>
+            <div className="absolute top-1.5 left-1.5">
+              <span className="text-[9px] bg-black/50 text-white px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                <ImageIcon className="h-2.5 w-2.5" /> Image
+              </span>
             </div>
           </div>
         )}
 
-        {/* Rewritten title */}
+        {/* AI Title */}
         {rewrittenTitle && (
-          <div className="space-y-0.5">
-            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
-              <FileText className="h-3 w-3" /> AI Title
+          <div>
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground mb-0.5 flex items-center gap-1">
+              <Sparkles className="h-2.5 w-2.5" /> AI Title
             </p>
             <p className="text-sm font-semibold leading-snug">{rewrittenTitle}</p>
           </div>
         )}
 
-        {/* Rewritten description */}
+        {/* AI Description */}
         {rewrittenDesc && (
-          <div className="space-y-0.5">
-            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
-              <FileText className="h-3 w-3" /> AI Description
+          <div>
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground mb-0.5 flex items-center gap-1">
+              <FileText className="h-2.5 w-2.5" /> Description
             </p>
             <p className="text-xs text-muted-foreground leading-relaxed">{rewrittenDesc}</p>
           </div>
         )}
 
-        <div className="border-t pt-3 space-y-2">
-          {/* Post body — editable */}
-          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Post body</p>
-          {error ? (
-            <p className="text-xs text-destructive flex items-start gap-1.5">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {error}
+        {/* Post body */}
+        <div>
+          <p className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">Post body</p>
+          {post.error ? (
+            <p className="text-xs text-destructive flex items-start gap-1.5 rounded bg-destructive/5 p-2">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {post.error}
             </p>
           ) : (
             <Textarea
               value={editedContent}
-              onChange={(e) => onEditContent(e.target.value)}
-              className={cn("text-sm min-h-[90px] resize-none", overLimit && "border-destructive focus-visible:ring-destructive")}
+              onChange={(e) => onChange(e.target.value)}
+              className={cn(
+                "text-sm min-h-[80px] resize-none",
+                overLimit && "border-destructive focus-visible:ring-destructive"
+              )}
               disabled={publishState === "publishing" || publishSuccess}
-              placeholder="Post content will appear here…"
             />
-          )}
-
-          {/* Hashtags */}
-          {hashtags.length > 0 && (
-            <div className="flex items-start gap-1.5">
-              <Hash className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-              <div className="flex flex-wrap gap-1">
-                {hashtags.map((h) => (
-                  <span key={h} className="text-xs text-primary font-medium">{h.startsWith("#") ? h : `#${h}`}</span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Source URL */}
-          {sourceUrl && (
-            <div className="flex items-center gap-1.5">
-              <LinkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <a
-                href={sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-primary hover:underline truncate"
-              >
-                {sourceUrl}
-              </a>
-            </div>
           )}
         </div>
 
-        {/* Error / publish feedback */}
+        {/* Hashtags */}
+        {post.hashtags.length > 0 && (
+          <div className="flex items-start gap-1.5 flex-wrap">
+            <Hash className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+            {post.hashtags.map((h) => (
+              <span key={h} className="text-xs text-primary font-medium">
+                {h.startsWith("#") ? h : `#${h}`}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Source URL */}
+        {sourceUrl && (
+          <div className="flex items-center gap-1.5">
+            <LinkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline truncate">
+              {sourceUrl}
+            </a>
+          </div>
+        )}
+
+        {/* Scheduled time */}
+        {post.scheduledAt && !publishSuccess && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Clock className="h-3.5 w-3.5 shrink-0" />
+            <span>Scheduled: {formatScheduledAt(post.scheduledAt)}</span>
+          </div>
+        )}
+
+        {/* Error */}
         {publishError && (
           <p className="text-xs text-destructive flex items-start gap-1.5">
             <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {publishError}
           </p>
         )}
 
-        {/* Publish button */}
-        {!publishSuccess && !error && (
+        {/* Action */}
+        {!publishSuccess && !post.error && (
           <Button
             size="sm"
             className="h-8 text-xs gap-1.5 w-full"
+            variant={canPublish ? "default" : "outline"}
             onClick={onPublish}
             disabled={publishState === "publishing" || !canPublish || overLimit}
-            title={
-              !hasAdapter ? "No adapter for this platform yet"
-              : !hasConn  ? "Connect this platform in Connections first"
-              : overLimit ? "Content exceeds character limit"
-              : undefined
-            }
           >
             {publishState === "publishing"
               ? <Loader2 className="h-3 w-3 animate-spin" />
@@ -293,9 +305,9 @@ function PostPreview({
               ? "Publishing…"
               : canPublish
               ? "Publish Now"
-              : hasAdapter
-              ? "Connect Platform First"
-              : "Adapter Pending"}
+              : !hasAdapter
+              ? "Adapter Pending"
+              : "Connect Platform First"}
           </Button>
         )}
       </div>
@@ -304,13 +316,12 @@ function PostPreview({
 }
 
 // ---------------------------------------------------------------------------
-// URL Card
+// URL Card — one per URL in the campaign
 // ---------------------------------------------------------------------------
-
 interface UrlCardProps {
   url:         CampaignUrl
   campaign:    Campaign
-  connections: PlatformConnection[]
+  connections: Connection[]
 }
 
 function UrlCard({ url, campaign, connections }: UrlCardProps) {
@@ -319,30 +330,20 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
   const [extracted,     setExtracted]     = useState<ExtractedContent | null>(null)
   const [showExtracted, setShowExtracted] = useState(false)
 
-  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([])
-  const [generateState,     setGenerateState]     = useState<GenerateState>("idle")
-  const [generateError,     setGenerateError]     = useState<string | null>(null)
-
-  // Generation result shared across all posts for this URL
-  const [generatedPosts,        setGeneratedPosts]        = useState<GeneratedPost[]>([])
-  const [rewrittenTitle,        setRewrittenTitle]        = useState<string | null>(null)
-  const [rewrittenDesc,         setRewrittenDesc]         = useState<string | null>(null)
-  const [generatedOgImage,      setGeneratedOgImage]      = useState<string | null>(null)
-  const [generatedSourceUrl,    setGeneratedSourceUrl]    = useState<string | null>(null)
+  const [generateState,        setGenerateState]        = useState<GenerateState>("idle")
+  const [generateError,        setGenerateError]        = useState<string | null>(null)
+  const [generatedPosts,       setGeneratedPosts]       = useState<GeneratedPost[]>([])
+  const [rewrittenTitle,       setRewrittenTitle]       = useState<string | null>(null)
+  const [rewrittenDesc,        setRewrittenDesc]        = useState<string | null>(null)
+  const [generatedOgImage,     setGeneratedOgImage]     = useState<string | null>(null)
+  const [generatedSourceUrl,   setGeneratedSourceUrl]   = useState<string | null>(null)
 
   const [editedContent,  setEditedContent]  = useState<Record<string, string>>({})
   const [publishStates,  setPublishStates]  = useState<Record<string, PublishState>>({})
   const [publishErrors,  setPublishErrors]  = useState<Record<string, string>>({})
   const [publishSuccess, setPublishSuccess] = useState<Record<string, boolean>>({})
 
-  // Pre-select connected platforms
-  useEffect(() => {
-    const connected = new Set(connections.filter((c) => c.status === "connected").map((c) => c.platform))
-    const initial   = campaign.platforms.filter((p) => connected.has(p))
-    setSelectedPlatforms(initial.length > 0 ? initial : campaign.platforms.slice(0, 1))
-  }, [campaign.platforms, connections])
-
-  // Load existing extracted_content
+  // Load any existing extracted_content for this URL
   useEffect(() => {
     const supabase = getSupabase()
     if (!supabase) return
@@ -354,17 +355,14 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
       .then(({ data }) => { if (data) setExtracted(data) })
   }, [url.id])
 
-  // -------------------------------------------------------------------------
-  // Extract
-  // -------------------------------------------------------------------------
+  // ---- Extract ----
   async function handleExtract() {
     setExtractState("extracting")
     setExtractError(null)
     try {
       const res  = await fetch("/api/extract", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ urlId: url.id }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urlId: url.id }),
       })
       const data = await res.json()
       if (!res.ok || !data.success) throw new Error(data.error ?? "Extraction failed")
@@ -386,34 +384,15 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Generate
-  // -------------------------------------------------------------------------
-  function getConnectionId(platform: string): string | null {
-    return connections.find((c) => c.platform === platform && c.status === "connected")?.id ?? null
-  }
-
+  // ---- Generate posts for all campaign platforms ----
   async function handleGenerate() {
     setGenerateState("generating")
     setGenerateError(null)
     setGeneratedPosts([])
-
-    const connectionIds: Record<string, string> = {}
-    for (const p of selectedPlatforms) {
-      const cid = getConnectionId(p)
-      if (cid) connectionIds[p] = cid
-    }
-
     try {
       const res  = await fetch("/api/generate", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          urlId:        url.id,
-          campaignId:   campaign.id,
-          platforms:    selectedPlatforms,
-          connectionIds,
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urlId: url.id, campaignId: campaign.id }),
       })
       const data: GenerateResponse = await res.json()
       if (!res.ok || !data.success) throw new Error(data.error ?? "Generation failed")
@@ -424,9 +403,9 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
       setGeneratedOgImage(data.ogImage)
       setGeneratedSourceUrl(data.sourceUrl)
 
-      const initContent: Record<string, string> = {}
-      for (const post of data.posts) initContent[post.platform] = post.content
-      setEditedContent(initContent)
+      const init: Record<string, string> = {}
+      for (const p of data.posts) init[p.platform] = p.content
+      setEditedContent(init)
       setGenerateState("done")
     } catch (err) {
       setGenerateError(err instanceof Error ? err.message : "Unknown error")
@@ -434,31 +413,24 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Publish
-  // -------------------------------------------------------------------------
+  // ---- Publish ----
   async function handlePublish(post: GeneratedPost) {
     if (!post.scheduledPostId) return
     const { platform } = post
-
     setPublishStates((s) => ({ ...s, [platform]: "publishing" }))
-    setPublishErrors((e) => ({ ...e, [platform]: "" }))
+    setPublishErrors((e)  => ({ ...e, [platform]: "" }))
 
     try {
       let scheduledPostId = post.scheduledPostId
-      const edited = editedContent[platform]
 
-      // If content was edited, create a fresh scheduled_post with the edited content
+      // If content edited, re-generate just this platform with the edited text
+      const edited = editedContent[platform]
       if (edited && edited !== post.content) {
-        const cid = getConnectionId(platform)
         const regenRes = await fetch("/api/generate", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({
-            urlId:        url.id,
-            campaignId:   campaign.id,
-            platforms:    [platform],
-            connectionIds: cid ? { [platform]: cid } : {},
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            urlId: url.id,
+            campaignId: campaign.id,
             editedContent: { [platform]: edited },
           }),
         })
@@ -469,9 +441,8 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
       }
 
       const res  = await fetch("/api/publish-now", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ scheduledPostIds: [scheduledPostId] }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledPostIds: [scheduledPostId] }),
       })
       const data = await res.json()
       const result = data.results?.[0]
@@ -490,47 +461,31 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
     }
   }
 
-  const availablePlatforms = campaign.platforms.filter(
-    (p) => PLATFORM_BY_ID[p]
+  const connectedSet = new Set(
+    connections.filter((c) => c.status === "connected").map((c) => c.platform)
   )
-
-  function togglePlatform(p: string) {
-    setSelectedPlatforms((prev) =>
-      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
-    )
-  }
 
   return (
     <Card className="overflow-hidden">
-      {/* URL header */}
       <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <CardTitle className="text-sm font-medium leading-tight truncate">
+            <p className="text-sm font-semibold leading-tight truncate">
               {url.title ?? formatHost(url.original_url)}
-            </CardTitle>
-            <a
-              href={url.original_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-muted-foreground hover:underline truncate block mt-0.5"
-            >
+            </p>
+            <a href={url.original_url} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-muted-foreground hover:underline truncate block mt-0.5">
               {formatHost(url.original_url)}
             </a>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {extracted && (
-              <Badge variant="secondary" className="text-xs gap-1">
+              <Badge variant="secondary" className="text-xs gap-1 h-6">
                 <CheckCircle2 className="h-3 w-3 text-green-500" /> Extracted
               </Badge>
             )}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleExtract}
-              disabled={extractState === "extracting"}
-              className="h-7 text-xs gap-1.5"
-            >
+            <Button size="sm" variant="outline" onClick={handleExtract}
+              disabled={extractState === "extracting"} className="h-7 text-xs gap-1.5">
               {extractState === "extracting"
                 ? <Loader2 className="h-3 w-3 animate-spin" />
                 : <RefreshCw className="h-3 w-3" />}
@@ -539,42 +494,39 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
           </div>
         </div>
         {extractState === "error" && extractError && (
-          <p className="text-xs text-destructive mt-1">{extractError}</p>
+          <p className="text-xs text-destructive mt-1 flex items-center gap-1">
+            <AlertCircle className="h-3.5 w-3.5" /> {extractError}
+          </p>
         )}
       </CardHeader>
 
       {/* Extracted content summary */}
       {extracted && (
         <div className="px-6 pb-3">
-          <button
-            onClick={() => setShowExtracted((v) => !v)}
-            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
+          <button onClick={() => setShowExtracted((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
             {showExtracted ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
             {showExtracted ? "Hide" : "Show"} extracted content
           </button>
 
           {showExtracted && (
-            <div className="mt-3 rounded-lg border bg-muted/40 p-4 space-y-2 text-sm">
+            <div className="mt-2 rounded-lg border bg-muted/40 p-3 space-y-2 text-sm">
               {extracted.og_image_url && (
-                <div className="rounded overflow-hidden border aspect-video bg-muted/30 mb-2 max-h-32">
+                <div className="rounded overflow-hidden border max-h-28">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={extracted.og_image_url}
-                    alt="OG image"
-                    className="w-full h-full object-cover"
-                    onError={(e) => { (e.currentTarget as HTMLImageElement).parentElement!.style.display = "none" }}
-                  />
+                  <img src={extracted.og_image_url} alt="OG"
+                    className="w-full h-28 object-cover"
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).parentElement!.style.display = "none" }} />
                 </div>
               )}
               {extracted.title && (
                 <div className="flex gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                  <p className="font-medium text-sm">{extracted.title}</p>
+                  <p className="text-sm font-medium leading-snug">{extracted.title}</p>
                 </div>
               )}
               {extracted.description && (
-                <p className="text-muted-foreground text-xs leading-relaxed line-clamp-2 pl-6">
+                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 pl-6">
                   {extracted.description}
                 </p>
               )}
@@ -590,17 +542,12 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
                     {new Date(extracted.published_at).toLocaleDateString()}
                   </span>
                 )}
-                {extracted.source_url && (
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Globe className="h-3 w-3" /> {formatHost(extracted.source_url)}
-                  </span>
-                )}
               </div>
               {extracted.keywords.length > 0 && (
                 <div className="flex items-start gap-2 pl-6">
-                  <Tag className="h-3 w-3 text-muted-foreground shrink-0 mt-1" />
+                  <Tag className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5" />
                   <div className="flex flex-wrap gap-1">
-                    {extracted.keywords.slice(0, 8).map((k) => (
+                    {extracted.keywords.slice(0, 6).map((k) => (
                       <Badge key={k} variant="outline" className="text-xs px-1.5 py-0">{k}</Badge>
                     ))}
                   </div>
@@ -612,51 +559,30 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
       )}
 
       <CardContent className="pt-0">
-        <div className="border-t pt-4 space-y-4">
-          {/* Platform selection */}
-          <div>
-            <p className="text-xs font-medium text-muted-foreground mb-2">Generate posts for</p>
-            <div className="flex flex-wrap gap-1.5">
-              {availablePlatforms.map((p) => {
-                const cfg      = PLATFORM_BY_ID[p]
-                const selected = selectedPlatforms.includes(p)
-                const hasConn  = connections.some((c) => c.platform === p && c.status === "connected")
-                return (
-                  <button
-                    key={p}
-                    onClick={() => togglePlatform(p)}
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium border transition-colors",
-                      selected
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
-                    )}
-                  >
-                    {cfg?.ui.displayName ?? p}
-                    {!hasConn && <span className="opacity-40 text-[9px]">●</span>}
-                  </button>
-                )
-              })}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1.5">
-              Tone, style &amp; hashtags are loaded from your platform settings.
-            </p>
+        <div className="border-t pt-4 space-y-3">
+          {/* Platform targets for this URL */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">Posting to:</span>
+            {campaign.platforms.map((p) => (
+              <PlatformDot key={p} id={p} connected={connectedSet.has(p)} />
+            ))}
           </div>
 
+          {/* Generate button */}
           <Button
             onClick={handleGenerate}
-            disabled={generateState === "generating" || selectedPlatforms.length === 0}
-            className="h-8 text-xs gap-1.5"
+            disabled={generateState === "generating"}
             size="sm"
+            className="h-8 text-xs gap-1.5 w-full sm:w-auto"
           >
             {generateState === "generating"
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
               : <Sparkles className="h-3.5 w-3.5" />}
             {generateState === "generating"
-              ? `Generating for ${selectedPlatforms.length} platform${selectedPlatforms.length > 1 ? "s" : ""}…`
+              ? `Generating for ${campaign.platforms.length} platform${campaign.platforms.length > 1 ? "s" : ""}…`
               : generatedPosts.length > 0
               ? "Re-generate All"
-              : "Generate Posts"}
+              : "Generate & Schedule Posts"}
           </Button>
 
           {generateError && (
@@ -665,40 +591,35 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
             </p>
           )}
 
-          {/* Generated post cards */}
+          {/* Generated post cards — one per platform */}
           {generatedPosts.length > 0 && (
-            <div className="space-y-3">
+            <div className="space-y-3 pt-1">
               <div className="flex items-center gap-2">
-                <p className="text-xs font-medium text-muted-foreground">
-                  Generated posts — review &amp; publish
-                </p>
+                <p className="text-xs font-medium text-muted-foreground">Generated posts</p>
                 {(rewrittenTitle || rewrittenDesc) && (
-                  <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Badge variant="secondary" className="text-[10px] gap-1 h-4">
                     <Sparkles className="h-2.5 w-2.5" /> AI-enhanced
                   </Badge>
                 )}
               </div>
-              {generatedPosts.map((post) => (
-                <PostPreview
-                  key={post.platform}
-                  platform={post.platform}
-                  content={post.content}
-                  editedContent={editedContent[post.platform] ?? post.content}
-                  onEditContent={(val) => setEditedContent((prev) => ({ ...prev, [post.platform]: val }))}
-                  hashtags={post.hashtags}
-                  charLimit={post.charLimit}
-                  rewrittenTitle={rewrittenTitle}
-                  rewrittenDesc={rewrittenDesc}
-                  ogImage={generatedOgImage}
-                  sourceUrl={generatedSourceUrl}
-                  connectionId={post.connectionId}
-                  publishState={publishStates[post.platform] ?? "idle"}
-                  publishError={publishErrors[post.platform] ?? ""}
-                  publishSuccess={publishSuccess[post.platform] ?? false}
-                  onPublish={() => handlePublish(post)}
-                  error={post.error}
-                />
-              ))}
+              <div className="grid gap-3 sm:grid-cols-2">
+                {generatedPosts.map((post) => (
+                  <PostCard
+                    key={post.platform}
+                    post={post}
+                    rewrittenTitle={rewrittenTitle}
+                    rewrittenDesc={rewrittenDesc}
+                    ogImage={generatedOgImage}
+                    sourceUrl={generatedSourceUrl}
+                    editedContent={editedContent[post.platform] ?? post.content}
+                    onChange={(v) => setEditedContent((prev) => ({ ...prev, [post.platform]: v }))}
+                    publishState={publishStates[post.platform]  ?? "idle"}
+                    publishError={publishErrors[post.platform]  ?? ""}
+                    publishSuccess={publishSuccess[post.platform] ?? false}
+                    onPublish={() => handlePublish(post)}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -708,170 +629,236 @@ function UrlCard({ url, campaign, connections }: UrlCardProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Campaign info bar
+// ---------------------------------------------------------------------------
+function CampaignInfoBar({ campaign, connections }: { campaign: Campaign; connections: Connection[] }) {
+  const connectedSet = new Set(
+    connections.filter((c) => c.status === "connected").map((c) => c.platform)
+  )
+  const connectedCount = campaign.platforms.filter((p) => connectedSet.has(p)).length
+
+  return (
+    <div className="rounded-lg border bg-muted/30 px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+      <div className="flex items-center gap-2">
+        <div className="flex gap-1">
+          {campaign.platforms.map((p) => (
+            <PlatformDot key={p} id={p} connected={connectedSet.has(p)} />
+          ))}
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {connectedCount}/{campaign.platforms.length} connected
+        </span>
+      </div>
+
+      {campaign.frequency && (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Zap className="h-3.5 w-3.5" />
+          <span>{campaign.frequency}</span>
+        </div>
+      )}
+
+      {campaign.startDate && (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <CalendarDays className="h-3.5 w-3.5" />
+          <span>Starts {new Date(campaign.startDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
+        </div>
+      )}
+
+      {campaign.timezone && (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Globe className="h-3.5 w-3.5" />
+          <span>{campaign.timezone}</span>
+        </div>
+      )}
+
+      <Badge
+        variant={campaign.status === "active" ? "default" : "secondary"}
+        className="text-xs ml-auto capitalize"
+      >
+        {campaign.status}
+      </Badge>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
-
 export default function ContentPage() {
-  const [campaigns,          setCampaigns]          = useState<Campaign[]>([])
+  const { campaigns, loading: campaignsLoading } = useCampaigns()
+
   const [selectedCampaignId, setSelectedCampaignId] = useState<string>("")
-  const [campaignUrls,       setCampaignUrls]       = useState<CampaignUrl[]>([])
-  const [connections,        setConnections]        = useState<PlatformConnection[]>([])
-  const [loading,            setLoading]            = useState(true)
-  const [urlsLoading,        setUrlsLoading]        = useState(false)
+  const [campaignUrls,       setCampaignUrls]        = useState<CampaignUrl[]>([])
+  const [connections,        setConnections]         = useState<Connection[]>([])
+  const [urlsLoading,        setUrlsLoading]         = useState(false)
+  const [connectionsLoaded,  setConnectionsLoaded]   = useState(false)
 
   const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId) ?? null
 
+  // Auto-select first campaign when loaded
   useEffect(() => {
-    async function load() {
-      const supabase = getSupabase()
-      if (!supabase) { setLoading(false); return }
-
-      setLoading(true)
-      const [{ data: cData }, { data: conns }] = await Promise.all([
-        supabase
-          .from("campaigns")
-          .select("id, name, status, platforms")
-          .is("deleted_at", null)
-          .order("created_at", { ascending: false }),
-        supabase
-          .from("platform_connections")
-          .select("id, platform, display_name, status")
-          .is("deleted_at", null),
-      ])
-      setCampaigns(cData ?? [])
-      setConnections(conns ?? [])
-      if (cData && cData.length > 0) setSelectedCampaignId(cData[0].id)
-      setLoading(false)
+    if (!campaignsLoading && campaigns.length > 0 && !selectedCampaignId) {
+      setSelectedCampaignId(campaigns[0].id)
     }
-    load()
+  }, [campaigns, campaignsLoading, selectedCampaignId])
+
+  // Load connections once on mount
+  useEffect(() => {
+    const supabase = getSupabase()
+    if (!supabase) { setConnectionsLoaded(true); return }
+    supabase
+      .from("platform_connections")
+      .select("id, platform, status")
+      .is("deleted_at", null)
+      .then(({ data, error }) => {
+        if (!error) setConnections(data ?? [])
+        setConnectionsLoaded(true)
+      })
+      .catch(() => { setConnectionsLoaded(true) })
   }, [])
 
-  const loadUrlsForCampaign = useCallback(async (campaignId: string) => {
+  // Load URLs for selected campaign using campaign.url_ids
+  const loadUrls = useCallback(async (campaignId: string) => {
     const supabase = getSupabase()
     if (!supabase) return
+
     setUrlsLoading(true)
-    const { data } = await supabase
-      .from("campaign_urls")
-      .select("id, original_url, title, created_at")
-      .eq("campaign_id", campaignId)
-      .is("deleted_at", null)
-      .order("created_at", { ascending: true })
-    setCampaignUrls(data ?? [])
-    setUrlsLoading(false)
+    setCampaignUrls([])
+
+    try {
+      // Step 1: get the ordered url_ids from the campaign row
+      const { data: campRow } = await supabase
+        .from("campaigns")
+        .select("url_ids")
+        .eq("id", campaignId)
+        .single()
+
+      const urlIds: string[] = campRow?.url_ids ?? []
+
+      if (urlIds.length === 0) {
+        setUrlsLoading(false)
+        return
+      }
+
+      // Step 2: fetch the URL rows matching those IDs
+      const { data: urls } = await supabase
+        .from("campaign_urls")
+        .select("id, original_url, title, created_at")
+        .in("id", urlIds)
+        .is("deleted_at", null)
+
+      // Preserve the order from url_ids
+      const sorted = (urls ?? []).sort(
+        (a, b) => urlIds.indexOf(a.id) - urlIds.indexOf(b.id)
+      )
+      setCampaignUrls(sorted)
+    } finally {
+      setUrlsLoading(false)
+    }
   }, [])
 
   useEffect(() => {
-    if (selectedCampaignId) loadUrlsForCampaign(selectedCampaignId)
-  }, [selectedCampaignId, loadUrlsForCampaign])
+    if (selectedCampaignId) loadUrls(selectedCampaignId)
+  }, [selectedCampaignId, loadUrls])
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
+  // ---- Render ----
+  const isLoading = campaignsLoading || !connectionsLoaded
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Content</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Extract URL content, AI-generate platform posts, and publish — all in one place.
-        </p>
-      </div>
+    <div className="flex flex-col flex-1">
+      <Header title="Content" />
 
-      {campaigns.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-            <Sparkles className="h-10 w-10 text-muted-foreground mb-4" />
-            <h3 className="font-medium mb-1">No campaigns yet</h3>
-            <p className="text-sm text-muted-foreground mb-4">
-              Create a campaign and add URLs to get started.
-            </p>
-            <Button size="sm" asChild>
-              <a href="/campaigns">Go to Campaigns</a>
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          <div className="flex items-center gap-3 flex-wrap">
-            <label className="text-sm font-medium text-muted-foreground shrink-0">Campaign</label>
-            <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
-              <SelectTrigger className="w-72">
-                <SelectValue placeholder="Select a campaign…" />
-              </SelectTrigger>
-              <SelectContent>
-                {campaigns.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    <span className="flex items-center gap-2">
-                      {c.name}
-                      <Badge
-                        variant={c.status === "active" ? "default" : "secondary"}
-                        className="text-xs"
-                      >
-                        {c.status}
-                      </Badge>
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button variant="ghost" size="sm" className="text-xs gap-1.5 h-7 text-muted-foreground" asChild>
-              <a href="/settings?tab=platforms">
-                <Sparkles className="h-3 w-3" /> AI settings
-              </a>
-            </Button>
+      <main className="flex-1 p-4 lg:p-6 space-y-5">
+
+        {isLoading ? (
+          <div className="flex items-center justify-center h-64">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
-
-          {selectedCampaign && selectedCampaign.platforms.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 items-center">
-              <span className="text-xs text-muted-foreground">Targets:</span>
-              {selectedCampaign.platforms.map((p) => {
-                const cfg     = PLATFORM_BY_ID[p]
-                const hasConn = connections.some((c) => c.platform === p && c.status === "connected")
-                return (
-                  <Badge key={p} variant={hasConn ? "default" : "outline"} className="text-xs">
-                    {cfg?.ui.displayName ?? p}
-                    {!hasConn && <span className="ml-1 opacity-60">disconnected</span>}
-                  </Badge>
-                )
-              })}
+        ) : campaigns.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+              <Sparkles className="h-10 w-10 text-muted-foreground mb-4" />
+              <h3 className="font-medium mb-1">No campaigns yet</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                Create a campaign with platforms and URLs to start generating content.
+              </p>
+              <Button size="sm" asChild><a href="/campaigns">Go to Campaigns</a></Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <>
+            {/* Campaign selector */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="text-sm font-medium shrink-0">Campaign</label>
+              <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
+                <SelectTrigger className="w-72">
+                  <SelectValue placeholder="Select a campaign…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {campaigns.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      <span className="flex items-center gap-2">
+                        {c.name}
+                        <Badge
+                          variant={c.status === "active" ? "default" : "secondary"}
+                          className="text-[10px] h-4"
+                        >
+                          {c.status}
+                        </Badge>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button variant="ghost" size="sm" className="text-xs h-7 text-muted-foreground gap-1" asChild>
+                <a href="/settings"><Sparkles className="h-3 w-3" /> AI settings</a>
+              </Button>
             </div>
-          )}
 
-          {urlsLoading ? (
-            <div className="flex items-center justify-center h-32">
-              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : campaignUrls.length === 0 ? (
-            <Card>
-              <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                <Globe className="h-8 w-8 text-muted-foreground mb-3" />
-                <h3 className="font-medium mb-1">No URLs in this campaign</h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Add URLs in the Campaigns page to start generating content.
+            {/* Campaign info bar */}
+            {selectedCampaign && (
+              <CampaignInfoBar campaign={selectedCampaign} connections={connections} />
+            )}
+
+            {/* URL list */}
+            {urlsLoading ? (
+              <div className="flex items-center justify-center h-32">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : campaignUrls.length === 0 ? (
+              <Card>
+                <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+                  <Globe className="h-8 w-8 text-muted-foreground mb-3" />
+                  <h3 className="font-medium mb-1">No URLs in this campaign</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Add URLs to this campaign from the Campaigns page.
+                  </p>
+                  <Button size="sm" variant="outline" asChild>
+                    <a href="/campaigns">Open Campaigns</a>
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : selectedCampaign && (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  {campaignUrls.length} URL{campaignUrls.length > 1 ? "s" : ""} in this campaign.
+                  Extract content, generate AI posts for all platforms, then publish or let the scheduler handle it.
                 </p>
-                <Button size="sm" variant="outline" asChild>
-                  <a href="/campaigns">Open Campaigns</a>
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid gap-4 lg:grid-cols-2">
-              {selectedCampaign && campaignUrls.map((u) => (
-                <UrlCard
-                  key={u.id}
-                  url={u}
-                  campaign={selectedCampaign}
-                  connections={connections}
-                />
-              ))}
-            </div>
-          )}
-        </>
-      )}
+                <div className="grid gap-5 lg:grid-cols-2">
+                  {campaignUrls.map((u) => (
+                    <UrlCard
+                      key={u.id}
+                      url={u}
+                      campaign={selectedCampaign}
+                      connections={connections}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </main>
     </div>
   )
 }
